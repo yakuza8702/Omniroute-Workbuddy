@@ -1,0 +1,185 @@
+# WorkBuddy sync + no-recompile Docker build (free-tier friendly)
+#
+# Strategy: instead of compiling the whole OmniRoute monorepo on GitHub's free
+# runners (OOM-prone, 30+ min), we take the upstream author's already-compiled
+# npm artifact (omniroute@<latest-version>), extract only the files we need,
+# layer this repo's WorkBuddy changes on top, and publish the result as a
+# Docker image tagged with both the upstream version and :latest.
+#
+# Every time the author (diegosouzapw) publishes a new release the cron run
+# picks it up automatically; our WorkBuddy changes are re-applied on top, so
+# they are never lost.
+name: WorkBuddy sync & docker build
+
+on:
+  # Pick up new upstream releases automatically (twice daily).
+  schedule:
+    - cron: "0 3,15 * * *"
+  # Manual re-run, e.g. to force-rebuild after changing the WorkBuddy overlay.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if the upstream version did not change"
+        type: boolean
+        default: false
+      version:
+        description: "Pin a specific upstream version (e.g. 3.8.51); empty = latest"
+        type: string
+        default: ""
+  # Rebuild after every WorkBuddy addon change without waiting for cron.
+  push:
+    branches: [workbuddy]
+    paths:
+      - "workbuddy-overlay/**"
+      - "scripts/docker/workbuddy/**"
+      - "Dockerfile.workbuddy"
+      - ".github/workflows/workbuddy-sync-build.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: workbuddy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/yakuza8702/omniroute-workbuddy
+  UPSTREAM_NPM: omniroute
+
+jobs:
+  sync-and-build:
+    name: Sync upstream artifact and build the WorkBuddy image
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      built: ${{ steps.version.outputs.built }}
+    steps:
+      - name: Checkout WorkBuddy fork
+        uses: actions/checkout@v4
+
+      - name: Resolve upstream version and decide whether to build
+        id: version
+        run: |
+          set -euo pipefail
+
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            # Latest published omniroute on npm mirrors the author's release.
+            VERSION=$(npm view "$UPSTREAM_NPM" version 2>/dev/null || curl -s \
+              https://api.github.com/repos/diegosouzapw/OmniRoute/releases/latest \
+              | jq -r '.tag_name | sub("^v"; "")')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Last built version is recorded in the repo so we skip redundant
+          # rebuilds on cron runs and only rebuild when the author updated.
+          LAST=$(cat .workbuddy-last-version 2>/dev/null || echo "none")
+          FORCE="${{ inputs.force || false }}"
+          TRIGGERED_BY="${{ github.event_name }}"
+
+          if [ "x$VERSION" = "x$LAST" ] && [ "x$FORCE" != "xtrue" ] && [ "x$TRIGGERED_BY" = "xschedule" ]; then
+            echo "Upstream version '$VERSION' unchanged since last build; skipping."
+            echo "built=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Will build the WorkBuddy image for upstream version '$VERSION' (prev: '$LAST')."
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: steps.version.outputs.built == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - name: Take the upstream compiled artifact
+        if: steps.version.outputs.built == 'true'
+        run: bash scripts/docker/workbuddy/take-upstream.sh "${{ steps.version.outputs.version }}"
+
+      - name: Apply the WorkBuddy changes onto the upstream files
+        if: steps.version.outputs.built == 'true'
+        run: node scripts/docker/workbuddy/apply.mjs
+
+      - name: Prune dev/test bits we do not ship
+        if: steps.version.outputs.built == 'true'
+        run: bash scripts/docker/workbuddy/prune-package.sh
+
+      - name: Log in to GHCR
+        if: steps.version.outputs.built == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        if: steps.version.outputs.built == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest,enable={{ is_default_branch || github.ref == 'refs/heads/workbuddy-addon' }}
+
+      - name: Build and push the WorkBuddy image
+        if: steps.version.outputs.built == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.workbuddy
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
+          build-args: |
+            OMNIROUTE_VERSION=${{ steps.version.outputs.version }}
+
+      - name: Remember the last built version
+        if: steps.version.outputs.built == 'true' && github.event_name != 'schedule'
+        run: |
+          set -euo pipefail
+          echo "${{ steps.version.outputs.version }}" > .workbuddy-last-version
+          cat > META.md <<EOF
+          - upstream_version: ${{ steps.version.outputs.version }}
+          - upstream_repo:   ${{ env.UPSTREAM_NPM }}
+          - image:           ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          - built_at:        $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+
+      # Push the updated version marker back to the repo using the WorkBuddy
+      # private write key (the same one used for the initial push). GitHub Actions
+      # default GITHUB_TOKEN can technically push to this repo; prefers that.
+      - name: Update the version marker in the repo
+        if: steps.version.outputs.built == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  "WorkBuddy CI"
+          git config user.email "workbuddy-ci@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git add .workbuddy-last-version
+            git commit -m "chore(workbuddy): circle upstream bump to ${{ steps.version.outputs.version }} [skip ci]"
+            if ! git push origin HEAD; then
+              echo "::notice::Version-marker push was refused (likely because of branch protection); ignoring."
+            fi
+          fi
+
+      - name: Build summary
+        if: steps.version.outputs.built == 'true'
+        run: |
+          {
+            echo "## WorkBuddy Docker build"
+            echo ""
+            echo "- Upstream version: \`${{ steps.version.outputs.version }}\`"
+            echo "- Image: \`${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}\`"
+            echo "- :latest mirror: \`${{ env.IMAGE_NAME }}:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Skipped because version unchanged
+        if: steps.version.outputs.built != 'true'
+        run: echo "::notice::Upstream version unchanged; nothing new to build."

@@ -1,0 +1,47 @@
+# WorkBuddy OmniRoute — Dockerfile (free-runner, no full compile)
+#
+# Build strategy: the WorkBuddy CI workflow extracts the author's ALREADY
+# COMPILED npm artifact (omniroute@<upstream-latest>) into build/workbuddy/upstream
+# and layers this repo's WorkBuddy changes over it with scripts/docker/workbuddy/apply.mjs.
+# This Dockerfile then just installs prod deps that the overlay needs and wires
+# the runtime entrypoint — the heavy tsc/next build stays local-once, not in CI.
+#
+# Rebuild anytime with:
+#   docker build -f Dockerfile.workbuddy --build-arg OMNIROUTE_VERSION=3.8.51 -t omniroute-workbuddy:3.8.51 .
+# The upstream base image is also usable directly when available:
+#   ghcr.io/yakuza8702/omniroute-workbuddy:latest
+
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE}
+
+ARG OMNIROUTE_VERSION
+ARG TARGETARCH
+
+ENV NODE_ENV=production \
+    PORT=20128 \
+    DATA_DIR=/data \
+    OMNIROUTE_WORKBUDDY=1 \
+    OMNIROUTE_WORKBUDDY_UPSTREAM_VERSION=${OMNIROUTE_VERSION}
+
+# Node native production deps for the server + the WorkBuddy addon
+WORKDIR /app
+
+# The WorkBuddy CI job produces this layer already patched:
+#   build/workbuddy/upstream/  → author's compiled package + workbuddy overlay + prune
+COPY build/workbuddy/upstream /app
+
+# Install only production dependencies declared by the artifact + overlay
+RUN npm install --omit=dev --omit=optional --no-audit --no-fund \
+    && npm cache clean --force
+
+RUN mkdir -p /data && chown -R node:node /data /app
+
+USER node
+EXPOSE 20128
+VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+    CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||20128)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+# The upstream package's bin entry starts the server + dashboard.
+ENTRYPOINT ["node", "bin/omniroute.mjs"]
