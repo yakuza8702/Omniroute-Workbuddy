@@ -69,13 +69,15 @@ RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,targe
 # Full source tree in for the compile (`.dockerignore` keeps VCS/dev bits out).
 COPY . ./
 
-# Same build budget as the upstream image: webpack (not Turbopack), 12 GB
-# heap, 2 page-data workers — sized for GitHub-hosted runners, and it also
-# fits the OMV self-hosted box the workflow runs on.
+# Memory budget tuned for the OMV self-hosted box (4 cores, ~14 GB free next
+# to everything else it already runs): the run at 2 page-data workers + 12 GB
+# parent heap died right after the webpack pass. A single page-data worker
+# (2 total processes) with an 8 GB ceiling per process fits comfortably and
+# keeps the compile phase unchanged.
 ENV OMNIROUTE_USE_TURBOPACK=0 \
     OMNIROUTE_MITM_STUB=1 \
-    NODE_OPTIONS="--max-old-space-size=12288" \
-    CIRCLE_NODE_TOTAL=2
+    NODE_OPTIONS="--max-old-space-size=8192" \
+    CIRCLE_NODE_TOTAL=1
 
 ARG OMNIROUTE_VERSION
 ENV OMNIROUTE_WORKBUDDY=1 \
