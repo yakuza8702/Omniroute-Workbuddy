@@ -1,49 +1,138 @@
-# WorkBuddy OmniRoute — Dockerfile (free-runner, no full compile)
+# ── WorkBuddy full-source Docker build ────────────────────────────────────
 #
-# Build strategy: the WorkBuddy CI workflow extracts the author's ALREADY
-# COMPILED npm artifact (omniroute@<upstream-latest>) into build/workbuddy/upstream
-# and layers this repo's WorkBuddy changes over it with scripts/docker/workbuddy/apply.mjs.
-# This Dockerfile then just installs prod deps that the overlay needs and wires
-# the runtime entrypoint — the heavy tsc/next build stays local-once, not in CI.
+# REPLACES the old "npm-artifact + workbuddy-overlay" approach: that scheme
+# shipped the author's compiled omniroute@<version> package and clipped the
+# workbuddy bits on top with text rewrites — but workbuddy-overlay/files/**
+# (the compiled addon artifacts) was never generated, so every published
+# image had ZERO workbuddy wiring and the provider never showed up in the
+# dashboard.
 #
-# Rebuild anytime with:
-#   docker build -f Dockerfile.workbuddy --build-arg OMNIROUTE_VERSION=3.8.51 -t omniroute-workbuddy:3.8.51 .
-# The upstream base image is also usable directly when available:
-#   ghcr.io/yakuza8702/omniroute-workbuddy:latest
+# This Dockerfile compiles THIS repo's source — which already carries the
+# whole WorkBuddy addon: providers (国内版 + International), executors, the
+# /api/workbuddy/* routes, model discovery and i18n keys — using the same
+# builder/runner recipe the upstream author ships in `Dockerfile`.
+#
+# Trigger: `.github/workflows/workbuddy-sync-build.yml` (push to branch
+# `workbuddy` touching scripts/docker/workbuddy/** or Dockerfile.workbuddy).
+#
+# Publishing result:
+#     ghcr.io/yakuza8702/omniroute-workbuddy:latest  (plus :<version>)
+#
+# Build by hand anytime:
+#   docker build -f Dockerfile.workbuddy --build-arg OMNIROUTE_VERSION=3.8.51 .
 
+# syntax=docker/dockerfile:1.7
 ARG NODE_IMAGE=node:22-bookworm-slim
-FROM ${NODE_IMAGE}
-
-ARG OMNIROUTE_VERSION
-ARG TARGETARCH
-
-ENV NODE_ENV=production \
-    PORT=20128 \
-    DATA_DIR=/data \
-    OMNIROUTE_WORKBUDDY=1 \
-    OMNIROUTE_WORKBUDDY_UPSTREAM_VERSION=${OMNIROUTE_VERSION}
-
-# Node native production deps for the server + the WorkBuddy addon
+FROM ${NODE_IMAGE} AS base
 WORKDIR /app
 
-# The WorkBuddy CI job produces this layer already patched:
-#   build/workbuddy/upstream/  → author's compiled package + workbuddy overlay + prune
-COPY build/workbuddy/upstream /app
+# git for dependency fetches; python3/make/g++ for better-sqlite3's native
+# build; libsecret for the dashboard's keytar usage.
+RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+       python3 make g++ git ca-certificates libsecret-1-0 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install only production dependencies declared by the artifact + overlay.
-# No lockfile ships in the upstream tarball, so allow the peer-resolution
-# slack npm used to accept by default (upstream's own install relies on it).
-RUN npm install --omit=dev --omit=optional --no-audit --no-fund --legacy-peer-deps \
-    && npm cache clean --force
+# ── Builder ───────────────────────────────────────────────────────────────
+FROM base AS builder
 
-RUN mkdir -p /data && chown -R node:node /data /app
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Workspace manifests must be present BEFORE `npm ci` so npm materializes the
+# workspace and installs its *workspace-only* deps (open-sse is a workspace
+# member; the app resolves `@omniroute/open-sse` imports at build time).
+COPY package*.json ./
+COPY open-sse/package.json ./open-sse/package.json
+COPY scripts/build/postinstall.mjs ./scripts/build/postinstall.mjs
+COPY scripts/build/postinstallSupport.mjs ./scripts/build/postinstallSupport.mjs
+COPY scripts/build/native-binary-compat.mjs ./scripts/build/native-binary-compat.mjs
+
+ENV NPM_CONFIG_LEGACY_PEER_DEPS=true
+
+RUN test -f package-lock.json \
+  || (echo "package-lock.json is required for reproducible Docker builds" >&2 && exit 1)
+
+# Lifecycle scripts suppressed at install time (supply-chain hardening, same
+# policy as the upstream Dockerfile); better-sqlite3's native binding is
+# rebuilt explicitly with npm's own bundled node-gyp so the step is
+# deterministic regardless of npm's script-allowlist behavior.
+RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,target=/root/.npm \
+    npm ci --include=optional --no-audit --no-fund --legacy-peer-deps --ignore-scripts \
+    && (cd node_modules/better-sqlite3 \
+        && node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --force_build=1) \
+    && test -f node_modules/better-sqlite3/build/Release/better_sqlite3.node \
+    && node -e "require('better-sqlite3')(':memory:').close()" \
+    && node -e "const wreq=require('wreq-js'); if(typeof wreq.createTransport!=='function') process.exit(1)"
+
+# Full source tree in for the compile (`.dockerignore` keeps VCS/dev bits out).
+COPY . ./
+
+# Same build budget as the upstream image: webpack (not Turbopack), 12 GB
+# heap, 2 page-data workers — sized for GitHub-hosted runners, and it also
+# fits the OMV self-hosted box the workflow runs on.
+ENV OMNIROUTE_USE_TURBOPACK=0 \
+    OMNIROUTE_MITM_STUB=1 \
+    NODE_OPTIONS="--max-old-space-size=12288" \
+    CIRCLE_NODE_TOTAL=2
+
+ARG OMNIROUTE_VERSION
+ENV OMNIROUTE_WORKBUDDY=1 \
+    OMNIROUTE_WORKBUDDY_UPSTREAM_VERSION=${OMNIROUTE_VERSION}
+
+RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-next-cache,target=/app/.build/next/cache \
+    mkdir -p /app/data \
+    && npm run build
+
+# ── Runner ────────────────────────────────────────────────────────────────
+# Mirrors the upstream `runner-base` target's shape: everything the app needs
+# at runtime lives inside .build/next/standalone (copied to /app), plus the
+# two exceptions Next's tracer can miss (better-sqlite3, healthcheck script).
+FROM ${NODE_IMAGE} AS runner-base
+
+LABEL org.opencontainers.image.title="omniroute (WorkBuddy addon)" \
+      org.opencontainers.image.description="OmniRoute gateway with the WorkBuddy ( 国内版 + International) addon compiled in" \
+      org.opencontainers.image.source="https://github.com/yakuza8702/Omniroute-Workbuddy"
+
+ENV NODE_ENV=production \
+    NODE_OPTIONS="--max-old-space-size=1024" \
+    PORT=20128 \
+    HOSTNAME=0.0.0.0 \
+    DATA_DIR=/app/data
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libsecret-1-0 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Next.js pequeno runtime heap? Keep USER as root for the COPY at build time;
+# the ENTRYPOINT/CMD below runs as non-root.
+RUN mkdir -p /app/data && chown node:node /app /app/data
+
+COPY --chown=node:node --from=builder /app/.build/next/standalone ./
+COPY --chown=node:node --from=builder /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
+RUN test -f /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+
+# Migrations land at <standalone>/migrations via assembleStandalone; point the
+# runtime at them.
+ENV OMNIROUTE_MIGRATIONS_DIR=/app/migrations
+
+# The Docker healthcheck script isn't traced by the standalone output, so
+# copy it explicitly (the HEALTHCHECK CMD references it).
+COPY --chown=node:node --from=builder /app/scripts/dev/healthcheck.mjs ./healthcheck.mjs
+
+# Warns if the mounted data volume has wrong ownership (upstream guard).
+COPY --chmod=755 --chown=root:root --from=builder /app/scripts/check-permissions.sh ./check-permissions.sh
+
+EXPOSE 20128
+VOLUME ["/app/data"]
 
 USER node
-EXPOSE 20128
-VOLUME ["/data"]
+ENTRYPOINT ["/app/check-permissions.sh"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-    CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||20128)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["node", "healthcheck.mjs"]
 
-# The upstream package's bin entry starts the server + dashboard.
-ENTRYPOINT ["node", "bin/omniroute.mjs"]
+CMD ["node", "dev/run-standalone.mjs"]
