@@ -12,10 +12,8 @@
 name: WorkBuddy sync & docker build
 
 on:
-  # Pick up new upstream releases automatically (twice daily).
-  schedule:
-    - cron: "0 3,15 * * *"
-  # Manual re-run, e.g. to force-rebuild after changing the WorkBuddy overlay.
+  # OWNER REQUEST (2026-10-05): builds run ONLY when manually triggered from
+  # the Actions tab — no cron, no push trigger, so nothing bills automatically.
   workflow_dispatch:
     inputs:
       force:
@@ -26,14 +24,6 @@ on:
         description: "Pin a specific upstream version (e.g. 3.8.51); empty = latest"
         type: string
         default: ""
-  # Rebuild after every WorkBuddy addon change without waiting for cron.
-  push:
-    branches: [workbuddy]
-    paths:
-      - "workbuddy-overlay/**"
-      - "scripts/docker/workbuddy/**"
-      - "Dockerfile.workbuddy"
-      - ".github/workflows/workbuddy-sync-build.yml"
 
 permissions:
   contents: read
