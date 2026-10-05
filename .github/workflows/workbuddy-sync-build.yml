@@ -51,9 +51,9 @@ env:
 jobs:
   sync-and-build:
     name: Sync upstream artifact and build the WorkBuddy image
-    # Self-hosted runner on the OMV box — free shared pool has been
-    # intermittently failing with "all ubuntu-latest runners are busy".
-    runs-on: [self-hosted, linux, x64]
+    # GitHub-hosted builder (owner request 2026-10-05): the OMV self-hosted
+    # runner was removed and must never build again.
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       built: ${{ steps.version.outputs.built }}
