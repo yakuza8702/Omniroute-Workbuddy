@@ -1,8 +1,2 @@
 [
-  {
-    "file": "dist/.build/next/server/chunks/ssr/open-sse_08xj180._.js",
-    "find": "\"codebuddy-cn\":br,",
-    "replace": "\"codebuddy-cn\":br,workbuddy-core:wbc,workbuddy-global:wbgc,",
-    "note": "provider-registry wiring for the WorkBuddy CN + International editions. The chunk filename is build-hashed per upstream release — regenerate both `file` and `find` against the new upstream output whenever apply.mjs reports it stale."
-  }
 ]
