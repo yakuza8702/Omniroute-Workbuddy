@@ -11,8 +11,9 @@ for path in \
   "$P/docs" \
   "$P/docs.i18n" \
   "$P/tests" \
-  "$P/.github" \
-  "$P/scripts" ; do
+  "$P/.github" ; do
+  # scripts/ INTENTIONALLY KEPT: package postinstall runs
+  # `node scripts/build/postinstall.mjs` — pruning it breaks npm install.
   if [ -e "$path" ]; then
     rm -rf "$path"
     echo "[workbuddy] pruned $path"
