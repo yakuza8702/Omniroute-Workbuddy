@@ -30,8 +30,10 @@ WORKDIR /app
 #   build/workbuddy/upstream/  → author's compiled package + workbuddy overlay + prune
 COPY build/workbuddy/upstream /app
 
-# Install only production dependencies declared by the artifact + overlay
-RUN npm install --omit=dev --omit=optional --no-audit --no-fund \
+# Install only production dependencies declared by the artifact + overlay.
+# No lockfile ships in the upstream tarball, so allow the peer-resolution
+# slack npm used to accept by default (upstream's own install relies on it).
+RUN npm install --omit=dev --omit=optional --no-audit --no-fund --legacy-peer-deps \
     && npm cache clean --force
 
 RUN mkdir -p /data && chown -R node:node /data /app
