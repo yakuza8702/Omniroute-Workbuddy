@@ -32,6 +32,7 @@ import { codebuddyCn } from "./codebuddy-cn";
 import { zed } from "./zed";
 import { zedHosted } from "./zed-hosted";
 import { museCode } from "./muse-code";
+import { workbuddy, workbuddyGlobal } from "./workbuddy";
 
 export const PROVIDERS = {
   claude,
@@ -66,6 +67,10 @@ export const PROVIDERS = {
   zed,
   "zed-hosted": zedHosted,
   "muse-code": museCode,
+  // WorkBuddy (国内版 / International) — desktop-app/import-token credential bridge,
+  // no standard OAuth browser flow. See providers/workbuddy.ts.
+  workbuddy,
+  "workbuddy-global": workbuddyGlobal,
 };
 
 export default PROVIDERS;
