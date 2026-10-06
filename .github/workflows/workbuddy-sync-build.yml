@@ -137,8 +137,13 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # cache-from only. `cache-to: type=gha,mode=max` was the single most
+          # expensive step in this job: exporting EVERY intermediate layer took
+          # 1984s (33 min) in run 37417329289 — two thirds of the whole build —
+          # while the compile it protects is only ~11 min and npm ci ~2.5 min.
+          # Restoring is cheap, exporting is not, so keep the read side and drop
+          # the write side; a rebuild costs ~17 min instead of ~48 min.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
           build-args: |
             OMNIROUTE_VERSION=${{ steps.version.outputs.version }}
 
