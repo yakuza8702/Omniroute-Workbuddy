@@ -1064,18 +1064,27 @@ export default function OAuthModal({
                 : provider === "grok-cli"
                   ? t("grokAuthJsonDescription")
                   : provider.startsWith("workbuddy")
-                    ? "Paste a WorkBuddy session token (the access token the desktop app holds). " +
-                      "On the machine running the app you can instead import the account directly — " +
-                      "the addon reads the app's auth files read-only."
+                    ? "Paste the WorkBuddy auth document — the contents of workbuddy-desktop*.info " +
+                      "from the desktop app's auth directory (or just its accessToken value). " +
+                      "The document carries the account identity (uid/domain) that credits and " +
+                      "model discovery need; a bare token alone only authorises chat."
                     : t("devinPasteDescription")}
             </p>
-            {provider === "grok-cli" ? (
+            {provider === "grok-cli" || provider.startsWith("workbuddy") ? (
               <textarea
                 className="w-full h-32 p-3 text-sm font-mono bg-input border border-border rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-primary"
                 value={pasteToken}
                 onChange={(e) => setPasteToken(e.target.value)}
-                placeholder={t("grokAuthJsonPlaceholder")}
-                aria-label={t("grokAuthJsonLabel")}
+                placeholder={
+                  provider.startsWith("workbuddy")
+                    ? '{"account":{"uid":"…"},"auth":{"accessToken":"eyJ…","refreshToken":"eyJ…","domain":"www.workbuddy.ai"}}'
+                    : t("grokAuthJsonPlaceholder")
+                }
+                aria-label={
+                  provider.startsWith("workbuddy")
+                    ? "WorkBuddy auth document"
+                    : t("grokAuthJsonLabel")
+                }
               />
             ) : (
               <Input
