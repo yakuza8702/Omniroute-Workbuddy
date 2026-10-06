@@ -285,6 +285,8 @@ test("an imported desktop credential starts as a usable connection, not an error
   });
   assert.equal(payload.testStatus, "active");
   assert.equal(payload.isActive, true);
-  assert.equal(payload.authType, "bearer");
+  // "oauth", not "bearer": the providers overview and the quota page only list
+  // connections tagged oauth/apikey, so a bearer tag hid working accounts.
+  assert.equal(payload.authType, "oauth");
   assert.equal(payload.provider, "workbuddy-global");
 });

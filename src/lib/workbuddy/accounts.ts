@@ -73,7 +73,15 @@ export function connectionPayloadFromWorkBuddyCredential(
   const edition: WorkBuddyEdition = editionForDomain(credential.domain);
   const payload: JsonRecord = {
     provider: edition.providerId,
-    authType: "bearer",
+    // "oauth", not "bearer": the catalog already files both editions under the
+    // OAuth category (src/shared/constants/providers/oauth.ts), the connection
+    // carries a refresh token, and the refresher is dispatched by provider id —
+    // while NOTHING in the codebase reads `authType === "bearer"`. Tagging the
+    // row "bearer" hid every imported account from the surfaces that gate on
+    // `authType === "oauth" || "apikey"`: the providers overview card rendered
+    // "No connections" and Provider Quota said "No Providers Connected" with
+    // three working accounts behind it.
+    authType: "oauth",
     accessToken: credential.accessToken,
     name: credential.nickname ?? `WorkBuddy ${edition.label}`,
     displayName: credential.nickname ?? credential.uin ?? `WorkBuddy ${edition.label}`,
