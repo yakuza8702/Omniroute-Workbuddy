@@ -53,8 +53,23 @@ const DEVICE_CODE_PROVIDERS = new Set([
   "muse-code",
 ]);
 
-const TOKEN_PASTE_PROVIDERS = new Set(["devin-desktop", "devin-cli", "grok-cli"]);
-const IMPORT_TOKEN_ONLY_PROVIDERS = new Set(["devin-desktop", "devin-cli"]);
+const TOKEN_PASTE_PROVIDERS = new Set([
+  "devin-desktop",
+  "devin-cli",
+  "grok-cli",
+  // WorkBuddy (国内版 / International): the account lives in the WorkBuddy
+  // desktop app's auth files and neither gateway exposes a public browser OAuth
+  // — the connect dialog must open straight in paste-token mode instead of
+  // dead-ending on "Browser login is disabled for workbuddy…".
+  "workbuddy",
+  "workbuddy-global",
+]);
+const IMPORT_TOKEN_ONLY_PROVIDERS = new Set([
+  "devin-desktop",
+  "devin-cli",
+  "workbuddy",
+  "workbuddy-global",
+]);
 
 // POST a bare Codex access token to the access-token-only import endpoint
 // (#1290); shared by the bare-JWT and session-JSON paste branches (#6636).
@@ -1048,7 +1063,11 @@ export default function OAuthModal({
                 ? t("devinDesktopPasteDescription")
                 : provider === "grok-cli"
                   ? t("grokAuthJsonDescription")
-                  : t("devinPasteDescription")}
+                  : provider.startsWith("workbuddy")
+                    ? "Paste a WorkBuddy session token (the access token the desktop app holds). " +
+                      "On the machine running the app you can instead import the account directly — " +
+                      "the addon reads the app's auth files read-only."
+                    : t("devinPasteDescription")}
             </p>
             {provider === "grok-cli" ? (
               <textarea
