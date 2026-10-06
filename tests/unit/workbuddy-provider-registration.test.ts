@@ -270,3 +270,21 @@ test("each imported account becomes its own addressable connection", async () =>
   assert.equal(roundTripped?.domain, "");
   assert.equal(roundTripped?.refreshToken, "ref-a");
 });
+
+test("an imported desktop credential starts as a usable connection, not an error row", () => {
+  // ConnectionRow paints a red "error" badge whenever `testStatus` is undefined
+  // (its status presentation ends in `effectiveStatus || t("statusError")`), so a
+  // healthy imported account used to look broken in the dashboard.
+  const payload = connectionPayloadFromWorkBuddyCredential({
+    accessToken: "tok",
+    refreshToken: "ref",
+    domain: "www.workbuddy.ai",
+    uid: "u-1",
+    nickname: "Account A",
+    source: "desktop",
+  });
+  assert.equal(payload.testStatus, "active");
+  assert.equal(payload.isActive, true);
+  assert.equal(payload.authType, "bearer");
+  assert.equal(payload.provider, "workbuddy-global");
+});

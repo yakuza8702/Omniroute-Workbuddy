@@ -77,6 +77,13 @@ export function connectionPayloadFromWorkBuddyCredential(
     accessToken: credential.accessToken,
     name: credential.nickname ?? `WorkBuddy ${edition.label}`,
     displayName: credential.nickname ?? credential.uin ?? `WorkBuddy ${edition.label}`,
+    // The credential comes from the app's own live sign-in, so the row starts as a
+    // usable connection. Without an explicit status the dashboard paints the row as
+    // a red "error": ConnectionRow's presentation falls through to
+    // `effectiveStatus || t("statusError")` when `testStatus` is undefined, which
+    // made a healthy account (credits OK, chat OK, isActive true) look broken.
+    testStatus: "active",
+    isActive: true,
     providerSpecificData: {
       [WORKBUDDY_CONNECTION_KEYS.domain]: credential.domain,
       [WORKBUDDY_CONNECTION_KEYS.region]: edition.region,
