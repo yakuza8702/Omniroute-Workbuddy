@@ -306,6 +306,70 @@ function buildAgentrouterRules(): ProviderErrorRule[] {
 /** Providers sharing the opencode upstream envelope, hence the opencode catalog rules. */
 const OPENCODE_RULE_FAMILY = ["opencode", "opencode-zen", "opencode-go", "opencode-cli"];
 
+// ─── WorkBuddy addon (国内版 + International) ───────────────────────────────
+/**
+ * Markers that mean "this request was refused by content policy", not "this
+ * account is broken". Quoted-key form avoids id-substring false positives.
+ * Mirrors `POLICY_REJECT_MARKERS` in `src/lib/workbuddy/upstream.ts`, which is
+ * where the addon classifies its own admin calls.
+ */
+export const WORKBUDDY_POLICY_REJECT_MARKERS = ["request illegal", '"code":11140'];
+
+/** Markers that mean "sign in again in the WorkBuddy app" (dead session). */
+const WORKBUDDY_SESSION_DEAD_MARKERS = ["Offline user session not found", "12153"];
+
+/** Markers that mean the account's credits are gone until it is topped up. */
+const WORKBUDDY_CREDIT_MARKERS = ["积分不足", "余额不足", "积分用完", "额度用尽", "没有积分"];
+
+function workBuddyBodyText(body: unknown): string {
+  try {
+    return typeof body === "string" ? body : JSON.stringify(body ?? "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * WorkBuddy upstream rules.
+ *
+ * The gateway reports business failures in the BODY with a 400/403 status, so the
+ * global status rules misclassify them: a depleted account reads as a generic
+ * failure, and a revoked sign-in reads as a rate limit. The reference client
+ * (`dsh-connect-workbuddy`, `classifyUpstreamError`) distinguishes them, and these
+ * rules carry that same distinction into the fallback layer:
+ *
+ *   - credits gone → `quota_exhausted` on the CONNECTION (credits are account-wide;
+ *     a timed wait cannot fix them) with a 30-minute cooldown;
+ *   - sign-in revoked → `auth_error` so the operator is told to sign in again rather
+ *     than to top up.
+ *
+ * Content-policy refusals are deliberately NOT a rule: they are not an account
+ * fault at all, so `checkFallbackError` returns without a cooldown — see the
+ * early return keyed on {@link WORKBUDDY_POLICY_REJECT_MARKERS}.
+ */
+function buildWorkBuddyRules(): ProviderErrorRule[] {
+  return [
+    {
+      id: "workbuddy-credits-exhausted",
+      match: ({ status, body }) => {
+        const text = workBuddyBodyText(body);
+        const marker = WORKBUDDY_CREDIT_MARKERS.find((m) => text.includes(m));
+        if (!marker && status !== 402) return null;
+        return { reason: "quota_exhausted", scope: "connection", cooldownMs: 30 * 60 * 1000 };
+      },
+    },
+    {
+      id: "workbuddy-session-dead",
+      match: ({ body }) => {
+        const text = workBuddyBodyText(body);
+        if (!WORKBUDDY_SESSION_DEAD_MARKERS.some((m) => text.includes(m))) return null;
+        return { reason: "auth_error", scope: "connection", cooldownMs: 5 * 60 * 1000 };
+      },
+    },
+  ];
+}
+
+
 /**
  * Global registry. Provider name → ordered list of rules (first match wins).
  * Add new providers here; the matcher in classifyError will pick them up
@@ -318,6 +382,10 @@ export const providerRuleRegistry = new Map<string, ProviderErrorRule[]>([
   ["cloudflare-ai", buildCloudflareAiRules()],
   ["openrouter", buildOpenrouterRules()],
   ["agentrouter", buildAgentrouterRules()],
+  // Both editions share one rule set: the gateway behind them is the same software,
+  // only the host differs (the credential's own domain picks the host).
+  ["workbuddy", buildWorkBuddyRules()],
+  ["workbuddy-global", buildWorkBuddyRules()],
 ]);
 
 /**

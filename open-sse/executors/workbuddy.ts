@@ -3,7 +3,7 @@ import type { ProviderCredentials } from "./base.ts";
 import {
   buildWorkBuddyChatHeaders,
   credentialFromWorkBuddyRequest,
-  ensureWorkBuddySystemHead,
+  prepareWorkBuddyChatBody,
 } from "@/lib/workbuddy/upstream";
 import { WORKBUDDY_PROVIDER_ID } from "@/lib/workbuddy/types";
 
@@ -66,14 +66,13 @@ export class WorkBuddyExecutor extends DefaultExecutor {
     credentials: ProviderCredentials
   ): unknown {
     const transformed = super.transformRequest(model, body, stream, credentials);
-    // `forceStream` already keeps the transport streaming; setting the body flag here as
-    // well means a client that explicitly asked for JSON still produces an SSE request
-    // the gateway accepts rather than a 400.
-    const withStream =
-      transformed && typeof transformed === "object" && !Array.isArray(transformed)
-        ? { ...(transformed as Record<string, unknown>), stream }
-        : transformed;
-    return ensureWorkBuddySystemHead(withStream);
+    // `forceStream` already keeps the transport streaming; `prepareWorkBuddyChatBody`
+    // sets the body flag too (a client that explicitly asked for JSON still produces an
+    // SSE request the gateway accepts), maps `developer`→`system`, guarantees the
+    // leading system message, and flattens `tool_choice` into the string form — each
+    // rule taken from the reference client, which encodes what this gateway enforces.
+    void stream;
+    return prepareWorkBuddyChatBody(transformed);
   }
 }
 

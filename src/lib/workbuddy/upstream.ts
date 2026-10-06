@@ -700,6 +700,88 @@ export function workBuddyChatUrl(domain: string | undefined | null): string {
 }
 
 /**
+ * Rewrite `tool_choice` into the string spelling the gateway accepts.
+ *
+ * Mirrors the reference client (`dsh-connect-workbuddy`, `normalizeToolChoice`): the
+ * upstream's field is a STRING, so OpenAI object forms reach it as a 400 —
+ * `{type:"auto"}` must become `"auto"`, a pinned function must become the bare name, and
+ * `"none"` must drop `tool_choice` AND the declarations it negates (`tools`/`functions`),
+ * because this gateway rejects the `"none"` spelling outright rather than ignoring it.
+ * Anything unrecognised is deleted: forwarding an unknown shape can only 400.
+ */
+function normalizeWorkBuddyToolChoice(out: JsonRecord): JsonRecord {
+  if (!("tool_choice" in out)) return out;
+  const withoutTools = (): JsonRecord => {
+    const { tools: _tools, functions: _functions, tool_choice: _choice, ...rest } = out;
+    return rest;
+  };
+  const choice = out.tool_choice;
+
+  if (typeof choice === "string") {
+    return choice.trim().toLowerCase() === "none" ? withoutTools() : out;
+  }
+  if (choice && typeof choice === "object" && !Array.isArray(choice)) {
+    const wrapped = choice as JsonRecord;
+    const type = typeof wrapped.type === "string" ? wrapped.type.trim().toLowerCase() : "";
+    if (type === "none") return withoutTools();
+    if (type === "auto" || type === "required") return { ...out, tool_choice: type };
+    if (type === "function" || type === "tool") {
+      const fn =
+        wrapped.function && typeof wrapped.function === "object" && !Array.isArray(wrapped.function)
+          ? (wrapped.function as JsonRecord)
+          : undefined;
+      const rawName =
+        typeof fn?.name === "string"
+          ? fn.name
+          : typeof wrapped.name === "string"
+            ? wrapped.name
+            : "";
+      const name = rawName.trim();
+      return { ...out, tool_choice: name === "" ? "auto" : name };
+    }
+    const { tool_choice: _dropped, ...rest } = out;
+    return rest;
+  }
+  const { tool_choice: _invalid, ...rest } = out;
+  return rest;
+}
+
+/**
+ * Everything the WorkBuddy gateways require of a chat body, in one place.
+ *
+ * The reference client (`dsh-connect-workbuddy`, `prepareChatBody`) is the contract here,
+ * and each rule exists because the gateway enforces it:
+ *
+ *  1. `stream: true` — the upstream rejects a non-streaming request; the platform
+ *     re-aggregates the SSE it gets back, so a JSON-asking client still works.
+ *  2. `developer` → `system` — the OpenAI-format route preserves `developer` by default,
+ *     and this gateway does not know the role.
+ *  3. a leading `system` message (see {@link ensureWorkBuddySystemHead}).
+ *  4. `tool_choice` flattened to its string form (see {@link normalizeWorkBuddyToolChoice}).
+ *
+ * Applied AFTER translation, so it sees the body that actually goes on the wire.
+ */
+export function prepareWorkBuddyChatBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const withStream: JsonRecord = { ...(body as JsonRecord), stream: true };
+
+  if (Array.isArray(withStream.messages)) {
+    withStream.messages = withStream.messages.map((message) => {
+      if (!message || typeof message !== "object" || Array.isArray(message)) return message;
+      const entry = message as JsonRecord;
+      if (typeof entry.role !== "string" || entry.role.trim().toLowerCase() !== "developer") {
+        return message;
+      }
+      return { ...entry, role: "system" };
+    });
+  }
+
+  const withHead = ensureWorkBuddySystemHead(withStream);
+  if (!withHead || typeof withHead !== "object" || Array.isArray(withHead)) return withHead;
+  return normalizeWorkBuddyToolChoice(withHead as JsonRecord);
+}
+
+/**
  * Reset instant carried in WorkBuddy's throttle message, as an ISO string.
  *
  * The gateway answers HTTP 429 with a business body and NO `Retry-After` header:

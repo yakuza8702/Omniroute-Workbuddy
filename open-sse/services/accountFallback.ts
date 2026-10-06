@@ -20,6 +20,7 @@ import {
   getProviderErrorRuleMatch,
   resolveRuleMatchBody,
   honorsRuleLockScope,
+  WORKBUDDY_POLICY_REJECT_MARKERS,
 } from "../config/providerErrorRules.ts";
 import * as rot from "./rotationConfig.ts";
 import { isRegistryPassthroughProvider } from "./passthroughRegistry.ts";
@@ -2091,6 +2092,23 @@ export function checkFallbackError(
     if (
       status === HTTP_STATUS.FORBIDDEN &&
       errorStr.toLowerCase().includes("not authorized for this route")
+    ) {
+      return { shouldFallback: false, cooldownMs: 0, reason: RateLimitReason.UNKNOWN };
+    }
+
+    // WorkBuddy addon: the gateway refuses a request that trips its content policy with
+    // HTTP 403 and a business body `{"code":11140,"msg":"request illegal"}`. That is a
+    // statement about THIS payload, not about the account — the same connection serves
+    // the next request normally, and the refusal is content-dependent enough to happen
+    // at random. Classifying it as quota (the generic 403 rule) or auth would cool the
+    // connection down (or mark it banned) for a healthy account. Mirrors the reference
+    // client's classification (`dsh-connect-workbuddy`, `classifyUpstreamError`), and
+    // follows the #2929 route-restriction precedent above: the error is surfaced, the
+    // connection is untouched.
+    if (
+      status === HTTP_STATUS.FORBIDDEN &&
+      (provider === "workbuddy" || provider === "workbuddy-global") &&
+      WORKBUDDY_POLICY_REJECT_MARKERS.some((marker) => errorStr.includes(marker))
     ) {
       return { shouldFallback: false, cooldownMs: 0, reason: RateLimitReason.UNKNOWN };
     }

@@ -38,6 +38,7 @@ const {
   parseWorkBuddyReasoning,
   foldWorkBuddyCreditPackages,
   ensureWorkBuddySystemHead,
+  prepareWorkBuddyChatBody,
   parseWorkBuddyRateLimitReset,
   classifyWorkBuddyFailure,
   buildWorkBuddyChatHeaders,
@@ -612,4 +613,59 @@ test("the addon describes its capabilities, editions and limits", () => {
   // operator is most likely to assume away, so both must be stated explicitly.
   assert.ok(info.guarantees.some((line) => line.includes("No automatic check-in")));
   assert.ok(info.nonGoals.some((line) => line.includes("Decrypting")));
+});
+
+test("the chat body is shaped exactly as the reference client shapes it", () => {
+  // 1) streaming is forced, `developer` becomes `system`, a system head is guaranteed
+  const prepared = prepareWorkBuddyChatBody({
+    model: "wbg/hy3",
+    stream: false,
+    messages: [{ role: "developer", content: "be terse" }, { role: "user", content: "hi" }],
+  }) as Record<string, unknown>;
+  assert.equal(prepared.stream, true, "the upstream rejects a non-streaming request");
+  const messages = prepared.messages as Array<Record<string, unknown>>;
+  assert.equal(messages[0].role, "system", "developer must be mapped to system");
+  assert.equal(messages[1].role, "user");
+
+  // a user-first body gains the placeholder system head
+  const headed = prepareWorkBuddyChatBody({
+    messages: [{ role: "user", content: "hi" }],
+  }) as Record<string, unknown>;
+  const headedMessages = headed.messages as Array<Record<string, unknown>>;
+  assert.equal(headedMessages[0].role, "system");
+
+  // 2) tool_choice is flattened to the string form the gateway accepts
+  const forms: Array<[unknown, unknown]> = [
+    [{ type: "auto" }, "auto"],
+    [{ type: "required" }, "required"],
+    [{ type: "function", function: { name: "read_file" } }, "read_file"],
+    [{ type: "tool", name: "read_file" }, "read_file"],
+    [{ type: "function", function: {} }, "auto"],
+  ];
+  for (const [input, expected] of forms) {
+    const out = prepareWorkBuddyChatBody({
+      messages: [{ role: "system", content: "s" }],
+      tools: [{ type: "function", function: { name: "read_file" } }],
+      tool_choice: input,
+    }) as Record<string, unknown>;
+    assert.equal(out.tool_choice, expected, `tool_choice ${JSON.stringify(input)}`);
+  }
+
+  // 3) "none" drops tool_choice AND the declarations it negates; unknown shapes vanish
+  for (const none of ["none", { type: "none" }] as const) {
+    const out = prepareWorkBuddyChatBody({
+      messages: [{ role: "system", content: "s" }],
+      tools: [{ type: "function", function: { name: "t" } }],
+      functions: [{ name: "legacy" }],
+      tool_choice: none,
+    }) as Record<string, unknown>;
+    assert.equal("tool_choice" in out, false);
+    assert.equal("tools" in out, false);
+    assert.equal("functions" in out, false);
+  }
+  const unknown = prepareWorkBuddyChatBody({
+    messages: [{ role: "system", content: "s" }],
+    tool_choice: { type: "something-else" },
+  }) as Record<string, unknown>;
+  assert.equal("tool_choice" in unknown, false);
 });
