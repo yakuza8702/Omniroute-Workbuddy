@@ -29,11 +29,21 @@ import { readFile, readdir, stat } from "node:fs/promises";
 
 import { editionForDomain, type WorkBuddyCredential, type WorkBuddyEdition } from "./types";
 
-/** Live auth file the desktop app refreshes in place. */
+/** Live auth file the desktop app refreshes in place (domestic build). */
 export const WORKBUDDY_LIVE_AUTH_FILENAME = "workbuddy-desktop.info";
-/** Backup prefix: `workbuddy-desktop.<stamp>.info`, one per historical sign-in. */
-const WORKBUDDY_BACKUP_PREFIX = "workbuddy-desktop.";
-const WORKBUDDY_BACKUP_SUFFIX = ".info";
+/**
+ * Edition-suffixed document names, live and timestamped backup.
+ *
+ * The desktop app names its documents per edition: the domestic build writes
+ * `workbuddy-desktop.info` / `workbuddy-desktop.<stamp>.<pid>.<uuid>.info`,
+ * while the international build writes `workbuddy-desktop-ai.info` and
+ * `workbuddy-desktop-ai.<stamp>.<pid>.<uuid>.info` (verified on a real Linux
+ * install under `~/.local/share/CodeBuddyExtension/Data/Public/auth/`).
+ * Matching only the domestic names made discovery answer `accounts: []` with
+ * `probes: []` for an international sign-in — no error, just silence.
+ */
+const WORKBUDDY_LIVE_FILENAME_PATTERN = /^workbuddy-desktop(?:-[a-z0-9]+)?\.info$/i;
+const WORKBUDDY_BACKUP_FILENAME_PATTERN = /^workbuddy-desktop(?:-[a-z0-9]+)?\..+\.info$/i;
 
 /**
  * Environment overrides, read with LITERAL member access (`env.WORKBUDDY_AUTH_FILE`)
@@ -94,8 +104,15 @@ export function workBuddyDesktopAuthDirs(
 
 /** Whether a filename is one of the app's auth documents (live or timestamped backup). */
 export function isWorkBuddyAuthFilename(name: string): boolean {
-  if (name === WORKBUDDY_LIVE_AUTH_FILENAME) return true;
-  return name.startsWith(WORKBUDDY_BACKUP_PREFIX) && name.endsWith(WORKBUDDY_BACKUP_SUFFIX);
+  return WORKBUDDY_LIVE_FILENAME_PATTERN.test(name) || WORKBUDDY_BACKUP_FILENAME_PATTERN.test(name);
+}
+
+/**
+ * Whether a filename is a LIVE auth document (no timestamp segment) — the
+ * account the app is currently signed in as, in either edition's naming.
+ */
+export function isWorkBuddyLiveAuthFilename(name: string): boolean {
+  return WORKBUDDY_LIVE_FILENAME_PATTERN.test(name);
 }
 
 /** A field wrapper the desktop app uses for encrypted credential values. */
@@ -267,9 +284,9 @@ export async function listWorkBuddyAuthFiles(
     } catch {
       continue;
     }
-    const live = entries.filter((name) => name === WORKBUDDY_LIVE_AUTH_FILENAME);
+    const live = entries.filter((name) => isWorkBuddyLiveAuthFilename(name));
     const backups = entries
-      .filter((name) => name !== WORKBUDDY_LIVE_AUTH_FILENAME && isWorkBuddyAuthFilename(name))
+      .filter((name) => !isWorkBuddyLiveAuthFilename(name) && isWorkBuddyAuthFilename(name))
       .sort();
     for (const name of [...live, ...backups.slice().reverse()]) {
       const path = join(dir, name);

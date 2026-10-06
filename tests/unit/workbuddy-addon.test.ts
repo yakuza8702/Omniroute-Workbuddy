@@ -52,6 +52,7 @@ const { selectWorkBuddyFreeModel, listWorkBuddyFreeModels, rankWorkBuddyModelsBy
 const {
   workBuddyDesktopAuthDirs,
   isWorkBuddyAuthFilename,
+  isWorkBuddyLiveAuthFilename,
   parseWorkBuddyAuthDocument,
   discoverWorkBuddyCredentials,
   fingerprintWorkBuddyCredential,
@@ -434,6 +435,30 @@ test("both the live auth file and its timestamped backups are recognised", () =>
   assert.equal(isWorkBuddyAuthFilename("workbuddy-desktop.1750000000000.info"), true);
   assert.equal(isWorkBuddyAuthFilename("workbuddy-desktop.json"), false);
   assert.equal(isWorkBuddyAuthFilename("config.json"), false);
+});
+
+test("the international build's edition-suffixed documents are recognised too", () => {
+  // Verified on a real install: the international app writes
+  // `workbuddy-desktop-ai.info` plus `workbuddy-desktop-ai.<stamp>.<pid>.<uuid>.info`
+  // backups under ~/.local/share/CodeBuddyExtension/Data/Public/auth/. Matching only
+  // the domestic name made discovery answer `accounts: []` with `probes: []`.
+  assert.equal(isWorkBuddyAuthFilename("workbuddy-desktop-ai.info"), true);
+  assert.equal(
+    isWorkBuddyAuthFilename(
+      "workbuddy-desktop-ai.2026-09-29T16-09-09-216Z.50441.de5ef251-a044-425f-b2c5-180e1c536e83.info"
+    ),
+    true
+  );
+  // Live vs backup classification drives the "live file first" ordering.
+  assert.equal(isWorkBuddyLiveAuthFilename("workbuddy-desktop-ai.info"), true);
+  assert.equal(isWorkBuddyLiveAuthFilename("workbuddy-desktop.info"), true);
+  assert.equal(
+    isWorkBuddyLiveAuthFilename("workbuddy-desktop-ai.2026-09-29T16-09-09-216Z.50441.x.info"),
+    false
+  );
+  // Still not auth documents.
+  assert.equal(isWorkBuddyAuthFilename("workbuddy-desktop-ai.json"), false);
+  assert.equal(isWorkBuddyAuthFilename("other-desktop.info"), false);
 });
 
 test("both on-disk auth shapes parse, and encrypted tokens are named as such", () => {
