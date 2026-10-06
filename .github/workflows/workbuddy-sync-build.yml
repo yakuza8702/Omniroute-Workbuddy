@@ -1,14 +1,15 @@
-# WorkBuddy sync + no-recompile Docker build (free-tier friendly)
+# WorkBuddy — full-source Docker build + in-image add-provider smoke test
 #
-# Strategy: instead of compiling the whole OmniRoute monorepo on GitHub's free
-# runners (OOM-prone, 30+ min), we take the upstream author's already-compiled
-# npm artifact (omniroute@<latest-version>), extract only the files we need,
-# layer this repo's WorkBuddy changes on top, and publish the result as a
-# Docker image tagged with both the upstream version and :latest.
+# Strategy: compile THIS repo's source (it already carries the whole WorkBuddy
+# addon: both editions' providers, executors, /api/workbuddy/* routes, model
+# discovery, i18n) inside `Dockerfile.workbuddy`, publish the image to GHCR,
+# then boot that exact image here and verify the operator flow end to end.
 #
-# Every time the author (diegosouzapw) publishes a new release the cron run
-# picks it up automatically; our WorkBuddy changes are re-applied on top, so
-# they are never lost.
+# The old "extract the author's npm artifact + paste an overlay" scheme is gone:
+# workbuddy-overlay/files/** (the pre-compiled addon artifacts) never existed,
+# so every image it produced shipped with zero WorkBuddy wiring — the provider
+# was listed but "add" failed with "Unknown provider".
+#
 name: WorkBuddy sync & docker build
 
 on:
@@ -41,9 +42,12 @@ env:
 jobs:
   sync-and-build:
     name: Sync upstream artifact and build the WorkBuddy image
-    # GitHub-hosted builder (owner request 2026-10-05): the OMV self-hosted
-    # runner was removed and must never build again.
-    runs-on: ubuntu-24.04
+    # Self-hosted runner (labels: self-hosted, Linux, X64, dind). While GitHub
+    # Actions billing is unresolved a hosted job is refused outright with
+    # "recent account payments have failed or your spending limit needs to be
+    # increased", so the build runs here.
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 150
     outputs:
       version: ${{ steps.version.outputs.version }}
       built: ${{ steps.version.outputs.built }}
@@ -137,6 +141,69 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             OMNIROUTE_VERSION=${{ steps.version.outputs.version }}
+
+      - name: Smoke test the published image with this runner's Docker
+        if: steps.version.outputs.built == 'true'
+        timeout-minutes: 20
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::pull the image this job just pushed"
+          docker pull "$IMAGE_REF"
+          docker image inspect "$IMAGE_REF" --format 'image: {{.Id}} created {{.Created}}'
+          echo "::endgroup::"
+
+          CONTAINER="workbuddy-smoke"
+          VOLUME="workbuddy-smoke-data"
+          cleanup() {
+            docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+            docker volume rm -f "$VOLUME" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          cleanup
+
+          echo "::group::start the image (fresh data volume, no host port needed)"
+          # No `-p`: /api/workbuddy/* is LOCAL_ONLY (loopback peer only), so the
+          # checks run INSIDE the container via `docker exec` — a published port
+          # would arrive from the docker bridge and be rejected by design.
+          docker run -d --name "$CONTAINER" \
+            -e PORT=20128 \
+            -e INITIAL_PASSWORD=smoke-test-password \
+            -e REQUIRE_API_KEY=false \
+            -v "$VOLUME:/app/data" \
+            "$IMAGE_REF" >/dev/null
+          echo "::endgroup::"
+
+          echo "::group::wait for the server"
+          ready=0
+          for i in $(seq 1 90); do
+            if docker exec "$CONTAINER" node -e \
+              "fetch('http://127.0.0.1:20128/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
+              >/dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::server never became healthy inside the container"
+            docker logs --tail 120 "$CONTAINER" || true
+            exit 1
+          fi
+          echo "server is up"
+          echo "::endgroup::"
+
+          echo "::group::WorkBuddy add-provider smoke test"
+          docker cp scripts/docker/workbuddy/smoke-test.mjs "$CONTAINER:/smoke-test.mjs"
+          docker exec -e SMOKE_PASSWORD=smoke-test-password \
+            "$CONTAINER" node /smoke-test.mjs
+          echo "::endgroup::"
+
+          {
+            echo "### WorkBuddy image smoke test"
+            echo ""
+            echo "- image: \`${IMAGE_REF}\`"
+            echo "- boot + login + wizard probe (both editions) + add-provider + provider list + addon routes: **passed**"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remember the last built version
         if: steps.version.outputs.built == 'true' && github.event_name != 'schedule'
