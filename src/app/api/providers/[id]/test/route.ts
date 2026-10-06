@@ -359,6 +359,15 @@ export async function testOAuthConnection(
     const error = "Provider test not supported";
     return {
       valid: false,
+      // `skipped: true` — an absent OAUTH_TEST_CONFIG entry means this provider has no
+      // generic OAuth probe, which says NOTHING about its credential. The API-key
+      // branch below already returns skipped for exactly this reason, but this branch
+      // did not, so callers fell through to the failure path and persisted
+      // testStatus:"error" + lastError:"Provider test not supported" + a 30s cooldown.
+      // For a provider whose credentials are provisioned out-of-band (the WorkBuddy
+      // addon imports the desktop app's session) every health sweep then re-marked all
+      // accounts errored, and routing skipped them while they were perfectly usable.
+      skipped: true,
       error,
       refreshed: false,
       diagnosis: classifyFailure({ error, unsupported: true }),
