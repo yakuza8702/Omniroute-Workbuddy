@@ -19,6 +19,10 @@ export const PROVIDER_LABEL: Record<string, string> = {
   "grok-cli": "Grok Build",
   llmgateway: "LLM Gateway",
   lyceum: "Lyceum",
+  // WorkBuddy addon — the quota card falls back to the raw provider id when a
+  // provider is missing here, so an imported account rendered as "workbuddy-global".
+  workbuddy: "WorkBuddy (国内版)",
+  "workbuddy-global": "WorkBuddy (International)",
 };
 
 export const PROVIDER_ORDER: Record<string, number> = {
@@ -40,6 +44,9 @@ export const PROVIDER_ORDER: Record<string, number> = {
   "grok-cli": 17,
   llmgateway: 18,
   lyceum: 19,
+  // Coding-provider band, right after the other session-based providers.
+  workbuddy: 20,
+  "workbuddy-global": 21,
 };
 
 export const TIER_FILTERS = [
